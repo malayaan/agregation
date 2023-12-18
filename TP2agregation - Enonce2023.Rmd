@@ -1,0 +1,262 @@
+---
+title: "TP Agregation de modeles n°2"
+author: "Didier Rulliere"
+date: "18 décembre 2023"
+output:
+  pdf_document: default
+  html_document: default
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{css, echo=FALSE}
+.answer {
+background-color: lightblue;
+}
+```
+
+Note: à l'ouverture de ce document R markdown (.Rmd), si les accents apparaissent mal, dans RStudio sélectionner File, Reopen with encoding puis utf8.
+
+Dans cette version, quelques éléments de solution apparaissent sur fond bleu.
+
+# Problématique et objectif
+
+Lors du précédent TP, nous avons considéré des cas jouets simples, avec peu de données, et en dimension 1. Nous abordons ici le cas d'une dimension supérieure à un, avec un volume de donnée plus important, sur des données réelles, avec les problèmes que cela pose (bruit, valeurs manquantes, saisonnalité, dépendances, etc.) 
+
+Dans ce TP, nous allons considérer un dataset de volume relativement important, disponible ici: 
+<https://archive.ics.uci.edu/dataset/501/beijing+multi+site+air+quality+data>
+
+Ce fichier est destiné à l'analyse de la pollution de l'air sur des sites géographiques donnés, en Chine. Il va s'agir ici d'établir une prédiction de la concentration en un polluant, en fonction de variables explicatives.  
+
+Le jeu de données considéré comporte environ $n=35\,000$ lignes, et ne permettrait donc pas de procéder à des techniques de prédiction comme le Krigeage requérant l'inversion d'une matrice $n \times n$, soit usuellement $O(n^3)$ opérations (bien qu'en théorie, on puisse atteindre une complexité moindre).
+
+Comment faire pour bâtir une surface de réponse, alors que certaines méthodes ne sont pas applicables pour un tel volume de donnnées?
+
+Comme preuve de concept, nous allons essayer de bâtir un modèle simplifié basé sur des régressions linéaires locales, qui seront assemblées.
+L'objectif de ce TP n'est pas de fournir une analyse statistique complète des mécanismes à l'oeuvre dans les phénomènes de pollution. On vise ici essentiellement deux objectifs:
+
+* Montrer la faisabilité de l'approche d'agrégation sur des volumes de données prohibitifs pour certains métamodèles,
+* Illustrer les limites de l'approche.
+
+# Données initiales
+
+## Import des données
+
+Importer sur votre disque dur le fichier CSV disponible à cette adresse, <https://archive.ics.uci.edu/ml/machine-learning-databases/00501/PRSA2017_Data_20130301-20170228.zip>
+Puis importer sur R le fichier nommé
+*PRSA_Data_Wanliu_20130301-20170228.csv*
+
+```{r}
+csv_file <- "PRSA_Data_Wanliu_20130301-20170228.csv"
+data <- read.csv(csv_file)
+
+# Vérifiez les premières lignes des données pour vous assurer que tout s'est bien passé
+head(data)
+```
+
+## Analyses basiques
+
+Pour les besoins du TP, nous allons procéder à quelques analyses très basiques pour sélectionner les variables qui nous intéressent.
+
+Choisissez tout d'abord une graine de générateur aléatoire pour avoir des résultats reproductibles: c'est une bonne habitude à prendre quelle que soit l'étude!
+```{r seed}
+set.seed(1234567)
+```
+
+Afficher un récapitulatif des variables. Par exemple, la variable RAIN vous semble-t-elle utilisable?
+
+```{r}
+# Afficher un récapitulatif des variables
+str(data)
+
+# Résumé statistique des variables
+summary(data)
+```
+
+## sélection des données
+
+Pour cet exercice, nous allons nous contenter de quelques variables: **SO2**, **CO**, **O3**, **TEMP**, **PRES** représentant successivement les concentrations en dioxyde de soufre, en monoxyde de carbone, en ozone, la température et la pression.
+
+Attention, il s'agit d'un exercice, l'analyse ne cherche pas à être des plus pertinentes, mais à juste illustrer une méthodologie! Dans l'absolu, on pourrait imaginer créer des séries temporelles, supprimer les saisonnalités, tenir compte de la géographie, etc. puis travailler sur des résidus. Il faudrait également étudier la source des données, étudier la fiabilité des données, les valeurs aberrantes... Rien de tout cela ici!
+
+Créer un objet R contenant les seules colonnes considérées.
+
+```{r}
+# Sélectionner les colonnes souhaitées et créer un nouvel objet data.frame
+nouveau_data <- data[, c("SO2", "CO", "O3", "TEMP", "PRES")]
+
+# Afficher les premières lignes du nouvel objet
+head(nouveau_data)
+```
+
+Supprimer les lignes contenant des NA. (On pourrait ne le faire que sur la variable étudiée par la suite).
+```{r}
+# Supprimer les lignes contenant des NA dans toutes les variables
+nouveau_data_sans_na <- na.omit(nouveau_data)
+
+# Afficher les premières lignes du nouvel objet
+head(nouveau_data_sans_na)
+```
+
+Créez également un échantillon de 1000 points nommé *mySample*. Prenez l'habitude de travailler sur des échantillons plutôt que sur le dataset complet pour les premières analyses susceptible de prendre du temps, il est ensuite simple de sélectionner plus de points lorsque tout fonctionne bien.
+
+à l'aide de la procédure *pairs* ayez une première idée de comment les variables sont liées entre elles.
+```{r}
+# Créer un échantillon de 1000 points
+mySample <- nouveau_data_sans_na[sample(nrow(nouveau_data_sans_na), 1000), ]
+
+# Afficher une matrice de nuages de points pour explorer les relations entre les variables
+pairs(mySample)
+
+```
+
+# Sous-modèles
+
+## Régression linéaire simple
+Nous allons à présent ajuster un modèle de régression, à l'aide de la procédure *lm*. Expliquer par exemple la variable *SO2* en fonction d'un intercept, de *temp*, de *pres* (avec éventuellement un effet croisé *temp x pres*). Les différents facteurs vous paraissent-ils explicatifs? que peut-on dire du $R^2$?
+```{r}
+# Ajuster un modèle de régression linéaire simple
+modele_reg <- lm(SO2 ~ TEMP + PRES + TEMP:PRES, data = mySample)
+
+# Afficher le résumé du modèle
+summary(modele_reg)
+```
+analyse:
+
+En résumé, le modèle de régression linéaire simple montre que TEMP et PRES ont un effet significatif sur la concentration de SO2, mais leur pouvoir explicatif est relativement faible (R² faible). L'interaction entre TEMP et PRES n'est pas significative. D'autres facteurs non inclus dans le modèle peuvent influencer la concentration de SO2, ce qui explique la faible valeur du R²
+
+
+Créer un ensemble nommé *newdata* de températures et pression où l'on veut faire une prédiction, par exemple choisissez une pression constante médiane (1010.8), et une température variant de 0 à 30 degrés par pas de 0.01).
+
+Remarque: l'intérêt ici de choisir une pression constante est de préserver des graphiques 2D simples, mais le choix de pressions différentes conduirait à des surfaces de réponse en 3D, sans avoir à changer les calculs. 
+
+A l'aide de la fonction *predict*, obtenez des prédictions en ces nouveaux points, assortis d'intervalles de prédictions. Sous hypothèse gaussienne, obtenez la variance de prédiction en chaque point de *newdata*.
+```{r}
+# Create new data with TEMP varying from 0 to 30 by 0.01 and PRES constant
+newdata <- expand.grid(TEMP = seq(0, 30, by = 0.01), PRES = 1010.8)
+
+# Obtain predictions with prediction intervals
+predictions <- predict(modele_reg, newdata, interval = "prediction")
+
+# Extract the predictions and prediction intervals
+predicted_values <- predictions[, 1]
+prediction_intervals <- predictions[, c("lwr", "upr")]
+
+# Calculate prediction variances manually
+prediction_variances <- (prediction_intervals[, "upr"] - predicted_values)^2 / 4
+
+# Display the first few rows of predicted values, prediction intervals, and variances
+head(predicted_values)
+head(prediction_intervals)
+head(prediction_variances)
+
+
+```
+
+## Automatisation
+Une fois que cela fonctionne, créer une fonction *myPrediction* qui résumera les deux étapes *lm* et *predict* précédentes. Cette fonction prendra en input: le data considéré (ou un échantillon), et un ensemble nommé *newdata* de températures et pression où l'on veut faire une prédiction. Cette fonction renverra en output un dataframe contenant: la prédiction en chaque point de *newdata*, ainsi que la variance de cette prédiction. Tester cette fonction au moyen du data *SelectedData* et de l'échantillon *mySample*.
+
+```{r}
+# Define the myPrediction function
+myPrediction <- function(data, newdata) {
+  # Fit a simple linear regression model
+  modele_reg <- lm(SO2 ~ TEMP + PRES + TEMP:PRES, data = data)
+  
+  # Get predictions with prediction intervals
+  predictions <- predict(modele_reg, newdata, interval = "prediction", se.fit = TRUE)
+  
+  # Extract predicted values and calculate prediction variances
+  predicted_values <- predictions[, 1]
+  prediction_variances <- (predictions[, "upr"] - predictions[, "fit"])^2 / 4
+  
+  # Create a dataframe with predictions and variances
+  result_df <- data.frame(Prediction = predicted_values, Variance = prediction_variances)
+  
+  return(result_df)
+}
+
+SelectedData <- nouveau_data_sans_na
+SelectedData
+```
+
+
+```{r}
+# Test the function with SelectedData and mySample
+result <- myPrediction(SelectedData, mySample)
+
+# Print the resulting dataframe
+print(result)
+```
+
+# Agrégation de modèles
+
+L'inconvénient d'une régression linéaire unique sur l'ensemble des données est de ne pouvoir exhiber que des relations linéaires, ce qui est mal adapté si les réponses ne sont pas linéaires. Or, certaines réponses comme la concentration en *SO2* ne paraissent pas linéaire en fonction de la pression par exemple. D'où l'idée de construire des modèles locaux, sur des sous-ensembles de données, puis de les agréger. Il ne s'agit ici que d'une approche possible, pas nécessairement la plus adaptée à ce jeu de données en particulier bien sûr.
+
+## Clustering des données
+On va choisir de séparer les données en $p$ échantillons. Pour cela on va effectuer un clustering des facteurs explicatifs *TEMP* et *PRES* observés en $p=50$ groupes par exemple. Opérez ce clustering à l'aide de la procédure *kmeans*. Le résultat de kmeans contient un vecteur *cluster*, contenant le numéro de cluster de chaque observation.
+
+```{r}
+# tapez votre code ou vos commentaires ici
+```
+
+Remarque: l'effectif limité au sein de chaque groupe permettrait d'utiliser d'autres techniques de prédiction, impossibles à mettre en oeuvre sur la totalité des données, telle le Krigeage.
+
+## Calcul des prédictions pour chaque sous-modèle
+
+Pour chaque sous-modèle, calculer la prédiction résultant en *newdata*, en utilisant votre fonction *myPrediction*. Créer ainsi une liste de dataframes nommée *subModels*.
+
+```{r}
+# tapez votre code ou vos commentaires ici
+```
+
+Remarque: idéalement, les précédentes étapes peuvent être groupées dans une fonction dédiée, de façon à adapter facilement les traitements en cas de changement des données.
+
+## Agrégation des prédictions
+
+Pour simplifier et garder un TP de taille raisonnable, nous allons agréger les résultats en utilisant une méthode de votre choix, par exemple *produit d'expert* ou *Bayesian Committee Machine* (avec une variance a priori suffisante). De nombreuses agrégations sont possibles et peuvent être traitées dans la partie *Extensions Libres*, les calculs des modèles agrégés varient relativement peu d'une méthode à l'autre.
+
+```{r}
+# tapez votre code ou vos commentaires ici
+```
+
+## Sorties diverses
+
+Afficher le graphique donnant l'évolution de la pollution en fonction de la température, pour la méthode d'aggrégation que vous avez choisi
+
+```{r}
+# tapez votre code ou vos commentaires ici
+```
+
+Le graphique obtenu représente une coupe de la surface de réponse du modèle, pour une pression donnée. On pourrait également tracer d'autres coupes, ou la surface elle-même en 3D. D'autres techniques pourraient être mises en oeuvre pour obtenir une telle coupe, telle des méthodes à noyau par exemple.
+
+Notez que dans un modèle linéaire, à pression fixée la réponse en température serait linéaire (et d'ailleurs pourrait atteindre des concentrations négatives). Est-ce le cas ici?
+
+La mesure de l'adéquation du modèle pourrait se faire par exemple par validation croisée.
+
+## Limites
+
+Nous avons vu la faisabilité de l'approche d'agrégation pour construire des surfaces de réponse sur de gros volumes de données (ici pas si gros, pour garder le TP rapide à exécuter). Pour autant, de très nombreuses limites à l'approche peuvent être formulées, comme cela apparaîtra plus clairement si on trace le nuage de point initial.
+
+Il n'est pas directement possible de tracer les points observés dans le jeu de donnée pour la pression particulière étudiée, car aucun point ne sera exactement sur cette coupe. Il est possible néanmoins de colorer les points en fonction de leur proximité à cette coupe.
+
+```{r}
+# tapez votre code ou vos commentaires ici
+```
+
+Comme on le voit ici, les données restent très bruitées, et il serait nécessaire de travailler sur des résidus moins bruités pour obtenir des résultats plus concluants. Aucune étude de type série chronologique n'a été conduite ici, la fiabilité des données n'a pas non plus été contrôlée. Affiner le modèle lorsque la réponse est très bruitée peut présenter un intérêt réduit. En outre, des techniques telles le Bayesian Committee Machine doivent être conduite avec une variance a priori suffisante, sous peine d'incompatibilité.
+
+Les techniques d'aggrégation présentent de bonnes performances lorsqu'en chaque point, au moins un modèle présente une bonne qualité prédictive (avec une variance de prédiction faible): ce modèle se voit alors attribuer un poids important par rapport aux autres, et en chaque point, le modèle agrégé présentera une bonne qualité prédictive.
+
+A votre avis, quelles sont ici les limites de cette petite étude? dans quels cas les techniques d'agrégation vont-elles bien marcher, dans quels cas marcheront-elles mal? que peut-on dire des intervalles de prédiction?
+
+# Extensions libres
+
+Si vous avez le temps vous pouvez essayer d'améliorer le modèle: de très nombreuses pistes sont possibles: prise en compte d'autres variables explicatives, impact du nombre de clusters, choix du clustering, impact de la méthode d'agrégation, optimisation en utilisant des données test et des données d'apprentissage, création de surfaces de réponses complètes, utilisation des versions Robust BCM/Generalized PoE de façon à réduire le poids des clusters éloignés, utilisation d'autres données...
+
+```{r}
+# extensions libres
+
+```
+
